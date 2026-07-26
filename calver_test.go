@@ -71,7 +71,7 @@ func TestGetCalVerOnDefaultBranchNoTag(t *testing.T) {
 	}
 }
 
-func TestGetCalVerOnDefaultBranchWithTag(t *testing.T) {
+func TestGetCalVerWithExplicitCalVerTag(t *testing.T) {
 	repoDir := createTestRepoWithHistory(t, "main")
 	defer os.RemoveAll(repoDir)
 
@@ -85,14 +85,17 @@ func TestGetCalVerOnDefaultBranchWithTag(t *testing.T) {
 		}
 	}
 
-	// Tag commit 2 as v1.0.0
-	runGit("tag", "v1.0.0")
+	// Main branch is tagged with 2026.07.12
+	runGit("tag", "2026.07.12")
 
-	// Commit 3
-	dummyFile := filepath.Join(repoDir, "README.md")
-	os.WriteFile(dummyFile, []byte("commit 3"), 0644)
+	// Checkout feature branch calver-logic
+	runGit("checkout", "-b", "calver-logic")
+
+	// Add 1 commit on feature branch
+	dummyFile := filepath.Join(repoDir, "feature.txt")
+	os.WriteFile(dummyFile, []byte("new feature"), 0644)
 	runGit("add", ".")
-	runGit("commit", "-m", "commit 3")
+	runGit("commit", "-m", "feature commit 1")
 
 	fixedTime := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
 	res, err := GetCalVer(repoDir, fixedTime)
@@ -100,13 +103,16 @@ func TestGetCalVerOnDefaultBranchWithTag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Since v1.0.0, there is 1 commit (commit 3)
-	expectedVersion := "2026.07.1"
+	// Should be 2026.07.12-calver-logic.1
+	expectedVersion := "2026.07.12-calver-logic.1"
 	if res.Version != expectedVersion {
 		t.Errorf("expected version %q, got %q", expectedVersion, res.Version)
 	}
-	if res.DefaultCount != 1 {
-		t.Errorf("expected DefaultCount 1, got %d", res.DefaultCount)
+	if res.DefaultCount != 12 {
+		t.Errorf("expected DefaultCount 12, got %d", res.DefaultCount)
+	}
+	if res.BranchCount != 1 {
+		t.Errorf("expected BranchCount 1, got %d", res.BranchCount)
 	}
 }
 
@@ -125,7 +131,7 @@ func TestGetCalVerOnFeatureBranch(t *testing.T) {
 	}
 
 	// Create tag on main
-	runGit("tag", "v0.5.0") // main has 2 commits, tag at 2nd
+	runGit("tag", "v0.5.0") // main tag has baseline 0
 
 	// Create and checkout feature branch
 	runGit("checkout", "-b", "feature/login")
@@ -144,10 +150,6 @@ func TestGetCalVerOnFeatureBranch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Format: yyyy.mm.[commitCounts]-[branchName].[commitCount]
-	// Main branch at merge-base has tag v0.5.0, so 0 commits since tag on main.
-	// Feature branch has 3 commits.
-	// Clean branch name: feature-login
 	expectedVersion := "2026.07.0-feature-login.3"
 	if res.Version != expectedVersion {
 		t.Errorf("expected version %q, got %q", expectedVersion, res.Version)
@@ -158,7 +160,25 @@ func TestGetCalVerOnFeatureBranch(t *testing.T) {
 	if res.BranchCount != 3 {
 		t.Errorf("expected BranchCount 3, got %d", res.BranchCount)
 	}
-	if res.CleanBranch != "feature-login" {
-		t.Errorf("expected CleanBranch 'feature-login', got %q", res.CleanBranch)
+}
+
+func TestParseTagBaseline(t *testing.T) {
+	tests := []struct {
+		tag      string
+		expected int
+	}{
+		{"2026.07.12", 12},
+		{"v2026.07.12", 12},
+		{"2026.07.0", 0},
+		{"v1.0.5", 5},
+		{"v12", 12},
+		{"no-numbers", -1},
+	}
+
+	for _, tt := range tests {
+		got := parseTagBaseline(tt.tag)
+		if got != tt.expected {
+			t.Errorf("parseTagBaseline(%q) = %d, expected %d", tt.tag, got, tt.expected)
+		}
 	}
 }

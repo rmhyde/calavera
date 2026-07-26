@@ -14,7 +14,7 @@ import (
 // CalVerResult contains the components of the generated CalVer.
 type CalVerResult struct {
 	YearMonth    string // yyyy.mm
-	DefaultCount int    // commit count on default branch (or since tag)
+	DefaultCount int    // commit count on default branch (or tag baseline + commits since tag)
 	IsDefault    bool   // true if currently on default branch
 	BranchName   string // raw branch name
 	CleanBranch  string // sanitized branch name for versioning
@@ -46,21 +46,20 @@ func GetCalVer(repoPath string, now time.Time) (*CalVerResult, error) {
 
 	currentBranch, err := getCurrentBranch(absPath)
 	if err != nil {
-		// If branch detection fails (e.g. detached HEAD), try getting commit hash
 		currentBranch = "detached"
 	}
 
 	isDefault := (currentBranch == defaultBranch)
 
 	res := &CalVerResult{
-		YearMonth:  yearMonth,
-		IsDefault:  isDefault,
-		BranchName: currentBranch,
+		YearMonth:   yearMonth,
+		IsDefault:   isDefault,
+		BranchName:  currentBranch,
 		CleanBranch: sanitizeBranchName(currentBranch),
 	}
 
 	if isDefault {
-		// Calculate commit count on default branch since latest tag (or total commits)
+		// Calculate commit count on default branch (factoring in tag baseline)
 		count, err := getCommitCountSinceTag(absPath, defaultBranch)
 		if err != nil {
 			return nil, fmt.Errorf("failed to count commits on default branch: %w", err)
@@ -72,11 +71,10 @@ func GetCalVer(repoPath string, now time.Time) (*CalVerResult, error) {
 		// 1. Find merge-base between defaultBranch and current branch/HEAD
 		mergeBase, err := getMergeBase(absPath, defaultBranch, "HEAD")
 		if err != nil {
-			// If no common ancestor found, fallback to counting all commits on default branch & feature branch
 			mergeBase = defaultBranch
 		}
 
-		// 2. Count default branch commits up to merge-base (since tag reachable from merge-base)
+		// 2. Count default branch commits up to merge-base (factoring in tag baseline)
 		defaultCount, err := getCommitCountSinceTag(absPath, mergeBase)
 		if err != nil {
 			return nil, fmt.Errorf("failed to count commits up to merge-base: %w", err)
@@ -97,7 +95,6 @@ func GetCalVer(repoPath string, now time.Time) (*CalVerResult, error) {
 }
 
 func sanitizeBranchName(name string) string {
-	// Replace slashes, underscores, and invalid characters with hyphens
 	reg := regexp.MustCompile(`[^a-zA-Z0-9\-]+`)
 	sanitized := reg.ReplaceAllString(name, "-")
 	sanitized = strings.Trim(sanitized, "-")
@@ -120,14 +117,39 @@ func getLatestTag(dir, ref string) (string, error) {
 
 func getCommitCountSinceTag(dir, ref string) (int, error) {
 	tag, err := getLatestTag(dir, ref)
-	var revRange string
-	if err == nil && tag != "" {
-		revRange = fmt.Sprintf("%s..%s", tag, ref)
-	} else {
-		revRange = ref
+	if err != nil || tag == "" {
+		return getCommitCount(dir, ref)
 	}
 
-	return getCommitCount(dir, revRange)
+	revRange := fmt.Sprintf("%s..%s", tag, ref)
+	countSinceTag, err := getCommitCount(dir, revRange)
+	if err != nil {
+		return 0, err
+	}
+
+	baseCount := parseTagBaseline(tag)
+	if baseCount < 0 {
+		return getCommitCount(dir, ref)
+	}
+
+	return baseCount + countSinceTag, nil
+}
+
+// parseTagBaseline extracts the patch/commit count integer from tags like "2026.07.12", "v2026.07.12", or "v1.2.3".
+func parseTagBaseline(tag string) int {
+	cleanTag := strings.TrimPrefix(strings.TrimPrefix(tag, "v"), "V")
+
+	// Split by non-alphanumeric separators (e.g. dots, hyphens)
+	parts := regexp.MustCompile(`[.\-_]+`).Split(cleanTag, -1)
+
+	// Search backwards for the last pure numeric segment (e.g. "12" in "2026.07.12")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if val, err := strconv.Atoi(parts[i]); err == nil {
+			return val
+		}
+	}
+
+	return -1
 }
 
 func getCommitCountBetween(dir, fromRef, toRef string) (int, error) {
